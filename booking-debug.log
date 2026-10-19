@@ -1,0 +1,90 @@
+
+Running 1 test using 1 worker
+
+Schedule search parameters: {
+  date: '31-10-2026',
+  fromLocationId: 1,
+  toLocationId: 2,
+  expectedScheduleId: 1591,
+  expectedMerchantId: 43,
+  requestedPage: 1,
+  returnedPage: 1,
+  count: 11,
+  returnedItems: 11,
+  hasNext: false
+}
+┌─────────┬────────────┬────────────┬────────────────┬──────────────┬────────────────┐
+│ (index) │ scheduleId │ merchantId │ fromLocationId │ toLocationId │ availableSeats │
+├─────────┼────────────┼────────────┼────────────────┼──────────────┼────────────────┤
+│ 0       │ 1591       │ 43         │ 1              │ 2            │ 15             │
+│ 1       │ 1508       │ 43         │ 1              │ 2            │ 20             │
+│ 2       │ 1422       │ 43         │ 1              │ 2            │ 41             │
+│ 3       │ 739        │ 43         │ 1              │ 2            │ 41             │
+│ 4       │ 1516       │ 43         │ 1              │ 2            │ 20             │
+│ 5       │ 1436       │ 43         │ 1              │ 2            │ 41             │
+│ 6       │ 749        │ 43         │ 1              │ 2            │ 41             │
+│ 7       │ 1523       │ 43         │ 1              │ 2            │ 20             │
+│ 8       │ 1446       │ 43         │ 1              │ 2            │ 41             │
+│ 9       │ 758        │ 43         │ 1              │ 2            │ 41             │
+│ 10      │ 1765       │ 43         │ 1              │ 2            │ 10             │
+└─────────┴────────────┴────────────┴────────────────┴──────────────┴────────────────┘
+Configured booking values: {
+  scheduleId: 1591,
+  scheduleLineId: 10,
+  merchantId: 43,
+  seatId: 3,
+  availableSeatStatus: 1,
+  searchDate: '31-10-2026',
+  bookingDate: '31/10/2026'
+}
+Schedule response IDs: { id: 1591, nestedScheduleId: 271 }
+┌─────────┬───────────────────────┬────────┬────────────┬────────┬─────────────────────┬──────────────────────────────┐
+│ (index) │ scheduleVehicleSeatId │ seatId │ seatNumber │ status │ matchesNestedSeatId │ matchesScheduleVehicleSeatId │
+├─────────┼───────────────────────┼────────┼────────────┼────────┼─────────────────────┼──────────────────────────────┤
+│ 0       │ 13480                 │ 2      │ ''         │ 1      │ false               │ false                        │
+│ 1       │ 13481                 │ 2      │ ''         │ 1      │ false               │ false                        │
+│ 2       │ 13482                 │ 3      │ '1'        │ 1      │ true                │ false                        │
+│ 3       │ 13483                 │ 4      │ '2'        │ 1      │ false               │ false                        │
+│ 4       │ 13484                 │ 5      │ '3'        │ 1      │ false               │ false                        │
+│ 5       │ 13485                 │ 6      │ '4'        │ 1      │ false               │ false                        │
+│ 6       │ 13486                 │ 7      │ '5'        │ 1      │ false               │ false                        │
+│ 7       │ 13487                 │ 2      │ ''         │ 1      │ false               │ false                        │
+│ 8       │ 13488                 │ 8      │ '6'        │ 1      │ false               │ false                        │
+│ 9       │ 13489                 │ 9      │ '7'        │ 1      │ false               │ false                        │
+│ 10      │ 13490                 │ 2      │ ''         │ 1      │ false               │ false                        │
+│ 11      │ 13491                 │ 10     │ '8'        │ 1      │ false               │ false                        │
+│ 12      │ 13492                 │ 11     │ '9'        │ 1      │ false               │ false                        │
+│ 13      │ 13493                 │ 12     │ '10'       │ 1      │ false               │ false                        │
+│ 14      │ 13494                 │ 2      │ ''         │ 1      │ false               │ false                        │
+│ 15      │ 13495                 │ 13     │ '11'       │ 1      │ false               │ false                        │
+│ 16      │ 13496                 │ 14     │ '12'       │ 1      │ false               │ false                        │
+│ 17      │ 13497                 │ 15     │ '13'       │ 1      │ false               │ false                        │
+│ 18      │ 13498                 │ 16     │ '14'       │ 1      │ false               │ false                        │
+│ 19      │ 13499                 │ 17     │ '15'       │ 1      │ false               │ false                        │
+└─────────┴───────────────────────┴────────┴────────────┴────────┴─────────────────────┴──────────────────────────────┘
+  ✘  1 tests/bookings/booking-flow.spec.ts:47:7 › Booking Flow API › BOOKING-FLOW-001: create, verify and complete booking (14.1s)
+
+
+  1) tests/bookings/booking-flow.spec.ts:47:7 › Booking Flow API › BOOKING-FLOW-001: create, verify and complete booking › Create one booking for one passenger 
+
+    Error: Create booking: expected HTTP 200, received 404.
+    URL: https://api-integrate-gateway-staging.bigstore.asia/api/booking/v1/create
+    Response: {"statusCode":404,"timestamp":"2026-10-19T07:03:44.840Z","path":"/api/booking/v1/create","message":"Seats not found.","errorCode":"11005"}
+
+       at ../helpers/booking.helper.ts:20
+
+      18 |     const responseBody = await response.text();
+      19 |
+    > 20 |     throw new Error(
+         |           ^
+      21 |       [
+      22 |         `${operation}: expected HTTP 200, received ${response.status()}.`,
+      23 |         `URL: ${response.url()}`,
+        at readJson (/home/hour/Memotechs/QA/automate-practice/Api_intergration2/helpers/booking.helper.ts:20:11)
+        at /home/hour/Memotechs/QA/automate-practice/Api_intergration2/tests/bookings/booking-flow.spec.ts:305:23
+        at /home/hour/Memotechs/QA/automate-practice/Api_intergration2/tests/bookings/booking-flow.spec.ts:301:7
+
+    Error Context: test-results/bookings-booking-flow-Book-80f20-verify-and-complete-booking/error-context.md
+
+  1 failed
+    tests/bookings/booking-flow.spec.ts:47:7 › Booking Flow API › BOOKING-FLOW-001: create, verify and complete booking 
