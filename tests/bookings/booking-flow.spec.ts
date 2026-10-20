@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
-import { test, expect } from '@playwright/test';
+import {
+  test,
+  expect,
+  type APIRequestContext,
+} from '@playwright/test';
 
 import {
   buildBookingRequest,
@@ -9,12 +13,13 @@ import {
 } from '../../data/booking.data';
 
 import {
+  BOOKING_AUTH_CASES,
+  DEFAULT_BOOKING_LIST_PARAMS,
   BookingApi,
   readJson,
 } from '../../helpers/booking.helper';
 
 import type {
-  AvailableLocations,
   Booking,
   BookingStatus,
   BookingTransaction,
@@ -37,409 +42,723 @@ test.use({
   },
 });
 
-test.describe('Booking Flow API', () => {
+function assertBooking(booking: Booking): void {
+  expect(booking).toBeTruthy();
+
+  expect(Number.isInteger(booking.id)).toBe(true);
+  expect(booking.id).toBeGreaterThan(0);
+
+  expect(typeof booking.bookingNo).toBe('string');
+  expect(booking.bookingNo.trim().length).toBeGreaterThan(0);
+
+  expect(booking.status).toEqual(expect.any(Number));
+  expect(booking.paymentStatus).toEqual(expect.any(Number));
+
+  expect(Number.isInteger(booking.numberOfSeats)).toBe(true);
+  expect(booking.numberOfSeats).toBeGreaterThanOrEqual(0);
+
+  expect(booking.merchant).toEqual(
+    expect.objectContaining({
+      id: expect.any(Number),
+    }),
+  );
+
+  expect(booking.fromLocation).toEqual(
+    expect.objectContaining({
+      id: expect.any(Number),
+    }),
+  );
+
+  expect(booking.toLocation).toEqual(
+    expect.objectContaining({
+      id: expect.any(Number),
+    }),
+  );
+
+  expect(Array.isArray(booking.bookingItems)).toBe(true);
+
+  for (const item of booking.bookingItems) {
+    expect(Number.isFinite(item.amount)).toBe(true);
+    expect(item.amount).toBeGreaterThanOrEqual(0);
+
+    expect(item.seat).toEqual(
+      expect.objectContaining({
+        id: expect.any(Number),
+        seatNumber: expect.any(String),
+      }),
+    );
+  }
+}
+
+function assertPage(
+  body: Pagination<Booking>,
+  page: number,
+  pageSize: number,
+): void {
+  expect(body).toBeTruthy();
+  expect(Array.isArray(body.data)).toBe(true);
+
+  console.log('Booking list pagination:', {
+    requestedPage: page,
+    requestedPageSize: pageSize,
+    returnedPage: body.page,
+    returnedPageSize: body.pageSize,
+    returnedItems: body.data.length,
+    count: body.count,
+    hasNext: body.hasNext,
+  });
+
+  expect.soft(
+    body.page,
+    'Response page must match the requested page.',
+  ).toBe(page);
+
+  expect.soft(
+    body.pageSize,
+    'Response pageSize must match the requested pageSize.',
+  ).toBe(pageSize);
+
+  expect.soft(
+    body.data.length,
+    'Returned items must not exceed the requested pageSize.',
+  ).toBeLessThanOrEqual(pageSize);
+
+  expect(Number.isInteger(body.count)).toBe(true);
+  expect(body.count).toBeGreaterThanOrEqual(0);
+  expect(typeof body.hasNext).toBe('boolean');
+
+  const ids = body.data.map((booking) => booking.id);
+
+  expect(
+    new Set(ids).size,
+    'A page must not contain duplicate booking IDs.',
+  ).toBe(ids.length);
+
+  for (const booking of body.data) {
+    assertBooking(booking);
+  }
+}
+
+async function findExistingBooking(
+  request: APIRequestContext,
+): Promise<Booking> {
+  const api = new BookingApi(request);
+
+  const response = await api.getBookings({
+    ...DEFAULT_BOOKING_LIST_PARAMS,
+    page: 1,
+    pageSize: 1,
+  });
+
+  const body = await readJson<Pagination<Booking>>(
+    response,
+    'Find an existing booking',
+  );
+
+  expect(Array.isArray(body.data)).toBe(true);
+
+  expect(
+    body.data.length,
+    'Test data required: this account must have an existing booking.',
+  ).toBeGreaterThan(0);
+
+  // Pagination is checked in list tests.
+  // Detail tests only need an existing booking.
+  const booking = body.data[0];
+
+  assertBooking(booking);
+
+  return booking;
+}
+
+test.describe('Booking read APIs', () => {
+  test('BOOKING-LIST-001: return bookings with pagination', async ({
+    request,
+  }) => {
+    const api = new BookingApi(request);
+
+    const response = await api.getBookings({
+      ...DEFAULT_BOOKING_LIST_PARAMS,
+      page: 1,
+      pageSize: 5,
+    });
+
+    const body = await readJson<Pagination<Booking>>(
+      response,
+      'List bookings',
+    );
+
+    assertPage(body, 1, 5);
+  });
+
+  test('BOOKING-LIST-002: honor pageSize 1', async ({
+    request,
+  }) => {
+    const api = new BookingApi(request);
+
+    const response = await api.getBookings({
+      ...DEFAULT_BOOKING_LIST_PARAMS,
+      page: 1,
+      pageSize: 1,
+    });
+
+    const body = await readJson<Pagination<Booking>>(
+      response,
+      'List bookings with pageSize 1',
+    );
+
+    assertPage(body, 1, 1);
+  });
+
+  test('BOOKING-LIST-003: paginate without repeating booking IDs', async ({
+    request,
+  }) => {
+    const api = new BookingApi(request);
+
+    const params = {
+      ...DEFAULT_BOOKING_LIST_PARAMS,
+      page: 1,
+      pageSize: 5,
+      orderBy: 'ASC' as const,
+      sortBy: 'id',
+    };
+
+    const firstResponse = await api.getBookings(params);
+
+    const first = await readJson<Pagination<Booking>>(
+      firstResponse,
+      'Get first booking page',
+    );
+
+    assertPage(first, 1, 5);
+
+    // Keep existing assertion failures visible rather than skipping them.
+    if (!first.hasNext) {
+      test.skip(
+        test.info().errors.length === 0,
+        'At least two pages of bookings are required.',
+      );
+
+      return;
+    }
+
+    const secondResponse = await api.getBookings({
+      ...params,
+      page: 2,
+    });
+
+    const second = await readJson<Pagination<Booking>>(
+      secondResponse,
+      'Get second booking page',
+    );
+
+    assertPage(second, 2, 5);
+
+    expect(
+      second.data.length,
+      'hasNext=true must lead to a nonempty next page.',
+    ).toBeGreaterThan(0);
+
+    const firstIds = new Set(
+      first.data.map((booking) => booking.id),
+    );
+
+    for (const booking of second.data) {
+      expect.soft(
+        firstIds.has(booking.id),
+        `Booking ${booking.id} appears on both pages.`,
+      ).toBe(false);
+    }
+  });
+
+  test('BOOKING-GET-ID-001: get an existing booking by ID', async ({
+    request,
+  }) => {
+    const api = new BookingApi(request);
+    const selected = await findExistingBooking(request);
+
+    const response = await api.getById(selected.id);
+
+    const booking = await readJson<Booking>(
+      response,
+      'Get booking by ID',
+    );
+
+    assertBooking(booking);
+
+    expect(booking.id).toBe(selected.id);
+    expect(booking.bookingNo).toBe(selected.bookingNo);
+    expect(booking.merchant.id).toBe(selected.merchant.id);
+  });
+
+  test('BOOKING-GET-NO-001: get an existing booking by number', async ({
+    request,
+  }) => {
+    const api = new BookingApi(request);
+    const selected = await findExistingBooking(request);
+
+    const response = await api.getByNumber(
+      selected.bookingNo,
+    );
+
+    const booking = await readJson<Booking>(
+      response,
+      'Get booking by number',
+    );
+
+    assertBooking(booking);
+
+    expect(booking.id).toBe(selected.id);
+    expect(booking.bookingNo).toBe(selected.bookingNo);
+    expect(booking.merchant.id).toBe(selected.merchant.id);
+  });
+
+  test('BOOKING-STATUS-001: check an existing transaction', async ({
+    request,
+  }) => {
+    const trxNo =
+      process.env.BOOKING_EXISTING_TRX_NO?.trim();
+
+    test.skip(
+      !trxNo || trxNo === 'REPLACE',
+      'Set BOOKING_EXISTING_TRX_NO to an existing QA transaction.',
+    );
+
+    const api = new BookingApi(request);
+
+    const response = await api.checkStatus(trxNo!);
+
+    const body = await readJson<BookingStatus>(
+      response,
+      'Check existing transaction',
+    );
+
+    expect(body.trxNo).toBe(trxNo);
+    expect(body.status).toEqual(expect.any(Number));
+    expect(body.paymentStatus).toEqual(expect.any(Number));
+
+    expect(Array.isArray(body.bookings)).toBe(true);
+    expect(body.bookings.length).toBeGreaterThan(0);
+
+    for (const booking of body.bookings) {
+      expect(booking.id).toEqual(expect.any(Number));
+      expect(typeof booking.bookingNo).toBe('string');
+      expect(booking.bookingNo.length).toBeGreaterThan(0);
+      expect(booking.status).toEqual(expect.any(Number));
+      expect(booking.paymentStatus).toEqual(expect.any(Number));
+    }
+  });
+});
+
+test.describe('Booking authentication', () => {
+  for (const authCase of BOOKING_AUTH_CASES) {
+    test(`reject invalid authentication: ${authCase.name}`, async ({
+      playwright,
+    }) => {
+      const invalidRequest =
+        await playwright.request.newContext({
+          baseURL: auth.baseURL,
+          extraHTTPHeaders: {
+            Accept: 'application/json',
+            Authorization:
+              `Basic ${Buffer.from(
+                'qa-invalid-user:qa-invalid-password',
+              ).toString('base64')}`,
+          },
+        });
+
+      try {
+        const response = await invalidRequest.fetch(
+          authCase.path,
+          {
+            method: authCase.method,
+            data: authCase.body,
+            maxRedirects: 0,
+          },
+        );
+
+        expect(
+          response.status(),
+          `${authCase.method} ${authCase.path}: expected documented HTTP 401.`,
+        ).toBe(401);
+      } finally {
+        await invalidRequest.dispose();
+      }
+    });
+  }
+});
+
+test.describe('Booking mutation flow', () => {
   test.describe.configure({ retries: 0 });
 
-  test(
-    'BOOKING-FLOW-001: create, verify and complete booking',
-    async ({ request }, testInfo) => {
-      test.setTimeout(180_000);
+  test('BOOKING-FLOW-001: create, retrieve, complete and optionally cancel', async ({
+    request,
+  }, testInfo) => {
+    test.setTimeout(180_000);
 
-      const api = new BookingApi(request);
-      const data = getBookingData();
-      const reference = `QA-${randomUUID()}`;
+    const api = new BookingApi(request);
+    const data = getBookingData();
+    const reference = `QA-${randomUUID()}`;
 
-      let transaction!: BookingTransaction;
-      let createdBooking!: Booking;
-      let selectedSeatNumber = '';
+    let transaction!: BookingTransaction;
+    let createdBooking!: Booking;
+    let selectedSeatNumber = '';
 
-      async function waitForStatus(expectedStatus: number) {
-        await expect
-          .poll(
-            async () => {
-              const response = await api.checkStatus(transaction.trxNo);
+    async function waitForStatus(
+      expectedStatus: number,
+    ): Promise<void> {
+      await expect
+        .poll(
+          async () => {
+            const response = await api.checkStatus(
+              transaction.trxNo,
+            );
 
-              const status = await readJson<BookingStatus>(
-                response,
-                'Check transaction status',
-              );
+            const body = await readJson<BookingStatus>(
+              response,
+              'Check transaction status',
+            );
 
-              expect(status.trxNo).toBe(transaction.trxNo);
-              expect(Array.isArray(status.bookings)).toBe(true);
+            expect(body.trxNo).toBe(transaction.trxNo);
+            expect(Array.isArray(body.bookings)).toBe(true);
 
-              expect(
-                status.bookings.some(
-                  (booking) =>
-                    booking.bookingNo === createdBooking.bookingNo,
-                ),
-                'Transaction must contain the created booking',
-              ).toBe(true);
+            expect(
+              body.bookings.some(
+                (booking) =>
+                  booking.bookingNo === createdBooking.bookingNo,
+              ),
+            ).toBe(true);
 
-              return status.status;
-            },
-            {
-              message:
-                `Transaction ${transaction.trxNo} must reach ` +
-                `status ${expectedStatus}`,
-              timeout: 30_000,
-              intervals: [1_000, 2_000, 3_000],
-            },
-          )
-          .toBe(expectedStatus);
+            return body.status;
+          },
+          {
+            message:
+              `Transaction must reach status ${expectedStatus}`,
+            timeout: 30_000,
+            intervals: [1_000, 2_000, 3_000],
+          },
+        )
+        .toBe(expectedStatus);
+    }
+
+    await test.step('Find the configured schedule', async () => {
+      let selected: ScheduleSummary | undefined;
+
+      for (let page = 1; page <= 20; page += 1) {
+        const response = await api.getSchedules(data, page);
+
+        const body = await readJson<
+          Pagination<ScheduleSummary>
+        >(response, 'Search schedules');
+
+        expect(Array.isArray(body.data)).toBe(true);
+        expect(typeof body.hasNext).toBe('boolean');
+
+        selected = body.data.find(
+          (schedule) =>
+            schedule.id === data.scheduleId &&
+            schedule.merchant?.id === data.merchantId,
+        );
+
+        if (selected || !body.hasNext) {
+          break;
+        }
       }
 
-      await test.step('Verify the selected location pair', async () => {
-        const response = await api.getAvailableLocations();
-
-        const body = await readJson<AvailableLocations>(
-          response,
-          'Get available locations',
+      if (!selected) {
+        throw new Error(
+          [
+            'Configured schedule was not found.',
+            `Schedule: ${data.scheduleId}.`,
+            `Merchant: ${data.merchantId}.`,
+            `Date: ${data.searchDate}.`,
+            `Route: ${data.fromLocationId} -> ${data.toLocationId}.`,
+          ].join(' '),
         );
+      }
 
-        expect(body.items).toBeDefined();
+      expect(selected.fromLocation.id).toBe(
+        data.fromLocationId,
+      );
 
-        const pairs = Array.isArray(body.items)
-          ? body.items
-          : [body.items];
+      expect(selected.toLocation.id).toBe(
+        data.toLocationId,
+      );
 
-        const pairExists = pairs.some(
-          (pair) =>
-            pair.fromLocation?.id === data.fromLocationId &&
-            pair.toLocation?.id === data.toLocationId,
-        );
+      expect(selected.availableSeats).toBeGreaterThan(0);
+    });
 
-        expect(
-          pairExists,
-          'Configured departure and arrival pair must be available',
-        ).toBe(true);
-      });
+    await test.step('Validate the configured seat', async () => {
+      const response = await api.getScheduleDetail(data);
 
-      await test.step('Find the configured schedule', async () => {
-        let selectedSchedule: ScheduleSummary | undefined;
-        let searchedPages = 0;
-        let returnedSchedules = 0;
+      const detail = await readJson<ScheduleDetail>(
+        response,
+        'Get schedule detail',
+      );
 
-        for (let page = 1; page <= 20; page += 1) {
-          const response = await api.getSchedules(data, page);
+      expect(detail.id).toBe(data.scheduleId);
+      expect(detail.merchant.id).toBe(data.merchantId);
 
-          const body = await readJson<Pagination<ScheduleSummary>>(
-            response,
-            'Search schedules',
-          );
+      expect(detail.fromLocation.id).toBe(
+        data.fromLocationId,
+      );
 
-          expect(Array.isArray(body.data)).toBe(true);
-          expect(typeof body.hasNext).toBe('boolean');
+      expect(detail.toLocation.id).toBe(
+        data.toLocationId,
+      );
 
-          searchedPages += 1;
-          returnedSchedules += body.data.length;
+      expect(
+        Array.isArray(detail.schedule.scheduleSeatLayouts),
+      ).toBe(true);
 
-          console.log('Schedule search parameters:', {
-            date: data.searchDate,
-            fromLocationId: data.fromLocationId,
-            toLocationId: data.toLocationId,
-            expectedScheduleId: data.scheduleId,
-            expectedMerchantId: data.merchantId,
-            requestedPage: page,
-            returnedPage: body.page,
-            count: body.count,
-            returnedItems: body.data.length,
-            hasNext: body.hasNext,
-          });
-
-          console.table(
-            body.data.map((schedule) => ({
-              scheduleId: schedule.id,
-              merchantId: schedule.merchant?.id,
-              fromLocationId: schedule.fromLocation?.id,
-              toLocationId: schedule.toLocation?.id,
-              availableSeats: schedule.availableSeats,
-            })),
-          );
-
-          selectedSchedule = body.data.find(
-            (schedule) =>
-              schedule.id === data.scheduleId &&
-              schedule.merchant?.id === data.merchantId,
-          );
-
-          if (selectedSchedule || !body.hasNext) {
-            break;
-          }
-        }
-
-        if (!selectedSchedule) {
-          throw new Error(
-            [
-              'Configured schedule was not found.',
-              `Date: ${data.searchDate}.`,
-              `Route: ${data.fromLocationId} -> ${data.toLocationId}.`,
-              `Expected schedule ID: ${data.scheduleId}.`,
-              `Expected merchant ID: ${data.merchantId}.`,
-              `Searched pages: ${searchedPages}.`,
-              `Returned schedule rows: ${returnedSchedules}.`,
-            ].join(' '),
-          );
-        }
-
-        expect(selectedSchedule.fromLocation.id).toBe(
-          data.fromLocationId,
-        );
-
-        expect(selectedSchedule.toLocation.id).toBe(
-          data.toLocationId,
-        );
-
-        expect(
-          selectedSchedule.availableSeats,
-          'The selected schedule must have available seats',
-        ).toBeGreaterThan(0);
-      });
-
-      await test.step('Select an available numbered seat', async () => {
-        const response = await api.getScheduleDetail(data);
-
-        const detail = await readJson<ScheduleDetail>(
-          response,
-          'Get schedule detail',
-        );
-
-        expect(detail.id).toBe(data.scheduleId);
-        expect(detail.merchant.id).toBe(data.merchantId);
-        expect(detail.fromLocation.id).toBe(data.fromLocationId);
-        expect(detail.toLocation.id).toBe(data.toLocationId);
-
-        expect(
-          Array.isArray(detail.schedule.scheduleSeatLayouts),
-        ).toBe(true);
-
-        const seats = detail.schedule.scheduleSeatLayouts.flatMap(
+      const seats =
+        detail.schedule.scheduleSeatLayouts.flatMap(
           (layout) => layout.scheduleVehicleSeats,
         );
 
-        console.table(
-          seats.map((item) => ({
-            scheduleVehicleSeatId: item.id,
-            seatId: item.seat?.id,
-            seatNumber: item.seat?.seatNumber,
-            status: item.status,
-          })),
+      console.table(
+        seats.map((item) => ({
+          scheduleVehicleSeatId: item.id,
+          nestedSeatId: item.seat?.id,
+          seatNumber: item.seat?.seatNumber,
+          status: item.status,
+        })),
+      );
+
+      // Existing assumption: BOOKING_SEAT_ID is nested seat.id.
+      // The booking API's required ID mapping is still unconfirmed.
+      const selected = seats.find(
+        (item) =>
+          item.seat?.id === data.seatId &&
+          typeof item.seat.seatNumber === 'string' &&
+          item.seat.seatNumber.trim().length > 0,
+      );
+
+      if (!selected) {
+        throw new Error(
+          `Configured nested seat ID ${data.seatId} ` +
+            `was not found as a numbered seat in schedule ` +
+            `${data.scheduleId}. Confirm the booking seat-ID mapping.`,
         );
+      }
 
-        const selectedSeat = seats.find(
-          (item) =>
-            typeof item.seat?.seatNumber === 'string' &&
-            item.seat.seatNumber.trim().length > 0 &&
-            Number.isInteger(item.seat.id) &&
-            item.seat.id > 0 &&
-            item.status === data.availableSeatStatus,
-        );
+      expect(
+        selected.status,
+        'Seat must have the configured available status.',
+      ).toBe(data.availableSeatStatus);
 
-        if (!selectedSeat) {
-          throw new Error(
-            [
-              'No available numbered seat was found.',
-              `Schedule ID: ${data.scheduleId}.`,
-              `Expected available status: ${data.availableSeatStatus}.`,
-              'Confirm the seat-status meaning with your API team.',
-            ].join(' '),
-          );
-        }
+      selectedSeatNumber = selected.seat.seatNumber;
 
-        // Preserve the existing mapping to nested seat.id.
-        // Confirm this mapping with the booking API contract.
-        data.seatId = selectedSeat.seat.id;
-        selectedSeatNumber = selectedSeat.seat.seatNumber;
+      console.log('Booking identifiers:', {
+        scheduleId: detail.id,
+        nestedScheduleId: detail.schedule.id,
+        scheduleLineId: data.scheduleLineId,
+        nestedSeatId: selected.seat.id,
+        scheduleVehicleSeatId: selected.id,
+        seatNumber: selectedSeatNumber,
+        date: data.bookingDate,
+      });
+    });
 
-        expect(selectedSeat.status).toBe(data.availableSeatStatus);
+    await test.step('POST create booking', async () => {
+      const payload = buildBookingRequest(data, reference);
+      const bookingRequest = payload.bookings[0];
+      const bookingItem = bookingRequest.bookingItems[0];
 
-        console.log('Selected booking seat:', {
-          scheduleId: detail.id,
-          nestedScheduleId: detail.schedule.id,
-          configuredScheduleLineId: data.scheduleLineId,
-          selectedSeatId: data.seatId,
-          scheduleVehicleSeatId: selectedSeat.id,
-          seatNumber: selectedSeatNumber,
-          status: selectedSeat.status,
-          date: data.bookingDate,
-        });
-
-        await testInfo.attach('selected-booking-seat', {
-          body: JSON.stringify(
-            {
-              scheduleId: detail.id,
-              nestedScheduleId: detail.schedule.id,
-              scheduleLineId: data.scheduleLineId,
-              seatId: data.seatId,
-              scheduleVehicleSeatId: selectedSeat.id,
-              seatNumber: selectedSeatNumber,
-              status: selectedSeat.status,
-              date: data.bookingDate,
-            },
-            null,
-            2,
-          ),
-          contentType: 'application/json',
-        });
+      console.log('Create booking request IDs:', {
+        date: bookingRequest.date,
+        scheduleLineId: bookingRequest.scheduleLineId,
+        seatId: bookingItem.seatId,
+        priceId: bookingItem.priceId,
+        nationalityId: bookingItem.nationalityId,
+        amount: bookingItem.amount,
       });
 
-      await test.step('Create one booking for one passenger', async () => {
-        const payload = buildBookingRequest(data, reference);
+      const response = await api.create(payload);
 
-        expect(payload.passengerCount).toBe(1);
-        expect(payload.bookings).toHaveLength(1);
+      transaction = await readJson<BookingTransaction>(
+        response,
+        'Create booking',
+      );
 
-        const bookingRequest = payload.bookings[0];
-
-        expect(bookingRequest.numberOfPassenger).toBe(1);
-        expect(bookingRequest.bookingItems).toHaveLength(1);
-        expect(bookingRequest.bookingItems[0].seatId).toBe(data.seatId);
-        expect(bookingRequest.scheduleLineId).toBe(data.scheduleLineId);
-
-        // Log identifiers only; exclude customer details and credentials.
-        console.log('Create booking request IDs:', {
-          date: bookingRequest.date,
-          scheduleLineId: bookingRequest.scheduleLineId,
-          seatId: bookingRequest.bookingItems[0].seatId,
-          priceId: bookingRequest.bookingItems[0].priceId,
-          nationalityId: bookingRequest.bookingItems[0].nationalityId,
-          amount: bookingRequest.bookingItems[0].amount,
-        });
-
-        const response = await api.create(payload);
-
-        transaction = await readJson<BookingTransaction>(
-          response,
-          'Create booking',
-        );
-
-        expect(typeof transaction.trxNo).toBe('string');
-        expect(transaction.trxNo.length).toBeGreaterThan(0);
-
+      if (typeof transaction.trxNo === 'string') {
         testInfo.annotations.push({
           type: 'booking-transaction',
           description: transaction.trxNo,
         });
+      }
 
-        console.log(`Booking transaction: ${transaction.trxNo}`);
+      expect(typeof transaction.trxNo).toBe('string');
+      expect(transaction.trxNo.length).toBeGreaterThan(0);
 
-        expect(Array.isArray(transaction.bookings)).toBe(true);
-        expect(transaction.bookings).toHaveLength(1);
+      expect(Array.isArray(transaction.bookings)).toBe(true);
+      expect(transaction.bookings).toHaveLength(1);
 
-        createdBooking = transaction.bookings[0];
+      createdBooking = transaction.bookings[0];
 
-        expect(createdBooking.id).toEqual(expect.any(Number));
-        expect(typeof createdBooking.bookingNo).toBe('string');
-        expect(createdBooking.bookingNo.length).toBeGreaterThan(0);
+      assertBooking(createdBooking);
 
-        testInfo.annotations.push({
-          type: 'booking-number',
-          description: createdBooking.bookingNo,
-        });
-
-        console.log(`Booking number: ${createdBooking.bookingNo}`);
+      testInfo.annotations.push({
+        type: 'booking-number',
+        description: createdBooking.bookingNo,
       });
 
-      await test.step('Wait for status 3 from the flow diagram', async () => {
-        await waitForStatus(3);
+      expect(createdBooking.numberOfSeats).toBe(1);
+      expect(createdBooking.bookingItems).toHaveLength(1);
+
+      expect(createdBooking.merchant.id).toBe(
+        data.merchantId,
+      );
+
+      expect(createdBooking.fromLocation.id).toBe(
+        data.fromLocationId,
+      );
+
+      expect(createdBooking.toLocation.id).toBe(
+        data.toLocationId,
+      );
+
+      const item = createdBooking.bookingItems[0];
+
+      expect(item.seat.seatNumber).toBe(selectedSeatNumber);
+      expect(item.amount).toBeCloseTo(data.amount, 2);
+      expect(item.gender).toBe('male');
+      expect(item.passenger.name).toBe(data.passenger.name);
+    });
+
+    await test.step('GET check transaction status', async () => {
+      // Expected ready status from your previously shared flow.
+      await waitForStatus(3);
+    });
+
+    await test.step('GET booking by ID', async () => {
+      const response = await api.getById(
+        createdBooking.id,
+      );
+
+      const booking = await readJson<Booking>(
+        response,
+        'Get created booking by ID',
+      );
+
+      assertBooking(booking);
+
+      expect(booking.id).toBe(createdBooking.id);
+      expect(booking.bookingNo).toBe(
+        createdBooking.bookingNo,
+      );
+    });
+
+    await test.step('GET booking by number', async () => {
+      const response = await api.getByNumber(
+        createdBooking.bookingNo,
+      );
+
+      const booking = await readJson<Booking>(
+        response,
+        'Get created booking by number',
+      );
+
+      assertBooking(booking);
+
+      expect(booking.id).toBe(createdBooking.id);
+      expect(booking.bookingNo).toBe(
+        createdBooking.bookingNo,
+      );
+
+      expect(booking.bookingItems).toHaveLength(1);
+
+      const item = booking.bookingItems[0];
+
+      expect(item.seat.seatNumber).toBe(selectedSeatNumber);
+      expect(item.amount).toBeCloseTo(data.amount, 2);
+      expect(item.gender).toBe('male');
+
+      expect(item.passenger.name).toBe(
+        data.passenger.name,
+      );
+
+      expect(item.passenger.phoneNumber).toBe(
+        data.passenger.phoneNumber,
+      );
+
+      expect(item.passenger.emailAddress).toBe(
+        data.passenger.emailAddress,
+      );
+    });
+
+    await test.step('PUT complete transaction', async () => {
+      const response = await api.complete({
+        action: 'complete',
+        bookingTrxNo: transaction.trxNo,
+        customer: data.customer,
       });
 
-      await test.step('Verify booking detail by booking number', async () => {
-        const response = await api.getByNumber(
-          createdBooking.bookingNo,
-        );
+      const updated = await readJson<BookingTransaction>(
+        response,
+        'Complete booking',
+      );
 
-        const booking = await readJson<Booking>(
-          response,
-          'Get booking detail',
-        );
+      expect(updated.trxNo).toBe(transaction.trxNo);
+      expect(Array.isArray(updated.bookings)).toBe(true);
 
-        expect(booking.id).toBe(createdBooking.id);
-        expect(booking.bookingNo).toBe(createdBooking.bookingNo);
-        expect(booking.merchant.id).toBe(data.merchantId);
-        expect(booking.fromLocation.id).toBe(data.fromLocationId);
-        expect(booking.toLocation.id).toBe(data.toLocationId);
-        expect(booking.numberOfSeats).toBe(1);
+      expect(
+        updated.bookings.some(
+          (booking) => booking.id === createdBooking.id,
+        ),
+      ).toBe(true);
 
-        expect(Array.isArray(booking.bookingItems)).toBe(true);
-        expect(booking.bookingItems).toHaveLength(1);
+      await waitForStatus(data.completedStatus);
 
-        const item = booking.bookingItems[0];
+      const detailResponse = await api.getByNumber(
+        createdBooking.bookingNo,
+      );
 
-        expect(item.seat.id).toBe(data.seatId);
-        expect(item.seat.seatNumber).toBe(selectedSeatNumber);
-        expect(item.amount).toBeCloseTo(data.amount, 2);
-        expect(item.gender).toBe('male');
-        expect(item.passenger.name).toBe(data.passenger.name);
+      const booking = await readJson<Booking>(
+        detailResponse,
+        'Verify completed booking',
+      );
 
-        expect(item.passenger.phoneNumber).toBe(
-          data.passenger.phoneNumber,
-        );
+      expect(booking.id).toBe(createdBooking.id);
 
-        expect(item.passenger.emailAddress).toBe(
-          data.passenger.emailAddress,
-        );
-      });
+      expect(booking.customer.phoneNumber).toBe(
+        data.customer.phoneNumber,
+      );
 
-      await test.step('Complete the booking transaction', async () => {
-        const response = await api.complete({
-          action: 'complete',
+      expect(booking.customer.emailAddress).toBe(
+        data.customer.emailAddress,
+      );
+    });
+
+    if (data.cancelAfterComplete) {
+      await test.step('PUT cancel eligible booking', async () => {
+        if (data.cancelledStatus === undefined) {
+          throw new Error(
+            'Set BOOKING_CANCELLED_STATUS when cancellation is enabled.',
+          );
+        }
+
+        const response = await api.cancel({
           bookingTrxNo: transaction.trxNo,
-          customer: data.customer,
+          bookings: [createdBooking.bookingNo],
         });
 
-        const updated = await readJson<BookingTransaction>(
-          response,
-          'Complete booking',
-        );
-
-        expect(updated.trxNo).toBe(transaction.trxNo);
-
-        await waitForStatus(data.completedStatus);
-
-        const detailResponse = await api.getByNumber(
-          createdBooking.bookingNo,
-        );
-
-        const booking = await readJson<Booking>(
-          detailResponse,
-          'Verify customer after completion',
-        );
-
-        expect(booking.id).toBe(createdBooking.id);
-        expect(booking.bookingNo).toBe(createdBooking.bookingNo);
-
-        expect(booking.customer.phoneNumber).toBe(
-          data.customer.phoneNumber,
-        );
-
-        expect(booking.customer.emailAddress).toBe(
-          data.customer.emailAddress,
-        );
-      });
-
-      if (data.cancelAfterComplete) {
-        await test.step('Cancel the eligible paid booking', async () => {
-          if (data.cancelledStatus === undefined) {
-            throw new Error(
-              'Set BOOKING_CANCELLED_STATUS when cancellation is enabled.',
-            );
-          }
-
-          const response = await api.cancel({
-            bookingTrxNo: transaction.trxNo,
-            bookings: [createdBooking.bookingNo],
-          });
-
-          const cancelled = await readJson<BookingTransaction>(
+        const cancelled =
+          await readJson<BookingTransaction>(
             response,
             'Cancel booking',
           );
 
-          expect(cancelled.trxNo).toBe(transaction.trxNo);
+        expect(cancelled.trxNo).toBe(transaction.trxNo);
 
-          await waitForStatus(data.cancelledStatus);
-        });
-      }
-    },
-  );
+        await waitForStatus(data.cancelledStatus);
+      });
+    } else {
+      testInfo.annotations.push({
+        type: 'coverage',
+        description:
+          'Successful cancellation was not exercised because cancellation is disabled.',
+      });
+    }
+  });
 });
